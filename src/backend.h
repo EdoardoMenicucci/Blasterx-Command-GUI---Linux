@@ -28,9 +28,14 @@ class Backend : public QObject {
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
     Q_PROPERTY(QStringList profiles READ profiles NOTIFY profilesChanged)
     Q_PROPERTY(QString profileDirectory READ profileDirectory CONSTANT)
+    Q_PROPERTY(bool passthrough READ passthrough NOTIFY valuesChanged)
+    Q_PROPERTY(bool canPassthrough READ canPassthrough NOTIFY infoChanged)
 
 public:
-    explicit Backend(ControlDevice *device, const QString &profileDirectory = {}, QObject *parent = nullptr);
+    // Profiles default to ~/.config/blasterx/profiles, and what passthrough
+    // replaces is kept in ~/.local/state/blasterx.
+    explicit Backend(ControlDevice *device, const QString &profileDirectory = {},
+                     const QString &stateDirectory = {}, QObject *parent = nullptr);
 
     bool available() const { return m_device && m_device->isOpen(); }
     QString deviceName() const { return m_device ? m_device->name() : QString(); }
@@ -61,6 +66,17 @@ public:
     Q_INVOKABLE bool applyProfile(const QString &name);
     Q_INVOKABLE bool deleteProfile(const QString &name);
 
+    // Passthrough: the sound reaches the output unprocessed, with the
+    // Acoustic Engine (and so every playback effect and the equalizer) off
+    // and no bass management. It is read from the card, so it is on whenever
+    // the card is in that state, however it got there. Turning it on keeps
+    // the settings it replaces in a file, so turning it off brings them back,
+    // from this window or from another process.
+    bool passthrough() const;
+    bool canPassthrough() const;
+    Q_INVOKABLE bool setPassthrough(bool on);
+    Q_INVOKABLE bool togglePassthrough() { return setPassthrough(!passthrough()); }
+
     // "on", "Headphone" (or a unique prefix of it), or a plain number, as typed
     // on the command line.
     bool parseValue(const QString &name, const QString &text, int *out) const;
@@ -87,6 +103,11 @@ private:
     };
 
     bool writeValues(const QString &name, const QVector<int> &values);
+    // Writes every change and records them as one undo step; controls the
+    // card lacks are skipped.
+    bool writeStep(const QList<QPair<QString, QVector<int>>> &changes);
+    bool isWritable(const QString &name) const;
+    QString passthroughPath() const;
     void record(const QList<Edit> &edits);
     void replay(QList<Step> &from, QList<Step> &to, bool forward);
     QString profilePath(const QString &name) const;
@@ -95,6 +116,7 @@ private:
 
     ControlDevice *m_device;
     QString m_profileDirectory;
+    QString m_stateDirectory;
     QHash<QString, Control> m_controls;
     QStringList m_order;
     QVariantMap m_values;

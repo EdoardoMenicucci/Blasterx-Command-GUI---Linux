@@ -14,6 +14,23 @@ namespace {
 // into one undo step.
 constexpr qint64 kCoalesceMs = 800;
 
+// What passthrough sets. The Acoustic Engine gates every playback effect and
+// the equalizer in the driver, so switching it off bypasses them all; bass
+// redirection and the crossover on the front and rear speakers only act on
+// the speaker output, and are undone too. Cards without one of these simply
+// skip it.
+constexpr const char *kEngine = "Enable OutFX Playback Switch";
+struct Bypass {
+    const char *name;
+    int value;
+};
+constexpr Bypass kBypass[] = {
+    {kEngine, 0},
+    {"Bass Redirection", 0},
+    {"Full-Range Front Speakers", 1},
+    {"Full-Range Rear Speakers", 1},
+};
+
 QVariant firstValue(const Control &c) {
     const int v = c.values.value(0);
     return c.type == Control::Boolean ? QVariant(v != 0) : QVariant(v);
@@ -29,12 +46,17 @@ QString typeName(Control::Type type) {
 
 } // namespace
 
-Backend::Backend(ControlDevice *device, const QString &profileDirectory, QObject *parent)
+Backend::Backend(ControlDevice *device, const QString &profileDirectory, const QString &stateDirectory,
+                 QObject *parent)
     : QObject(parent), m_device(device),
       m_profileDirectory(!profileDirectory.isEmpty()
                              ? profileDirectory
                              : QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
-                                   + "/blasterx/profiles") {
+                                   + "/blasterx/profiles"),
+      m_stateDirectory(!stateDirectory.isEmpty()
+                           ? stateDirectory
+                           : QStandardPaths::writableLocation(QStandardPaths::GenericStateLocation)
+                                 + "/blasterx") {
     m_clock.start();
     // The card reports our own writes too, so events are folded together and
     // answered with a single read of the whole state.
@@ -162,6 +184,126 @@ bool Backend::writeValues(const QString &name, const QVector<int> &values) {
     }
     m_refresh.start();
     return true;
+}
+
+bool Backend::writeStep(const QList<QPair<QString, QVector<int>>> &changes) {
+    QList<Edit> edits;
+    bool ok = true;
+    for (const auto &[name, values] : changes) {
+        if (!isWritable(name) || values.isEmpty())
+            continue;
+        const Control c = m_controls.value(name);
+        QVector<int> after;
+        for (int v : values)
+            after << std::clamp(v, c.min, std::max(c.min, c.max));
+        after.resize(c.count, after.last());
+        if (after == c.values)
+            continue;
+        if (writeValues(name, after))
+            edits << Edit{name, c.values, after};
+        else
+            ok = false;
+    }
+    if (!edits.isEmpty()) {
+        record(edits);
+        m_undo.last().at = -kCoalesceMs;
+    }
+    return ok;
+}
+
+bool Backend::isWritable(const QString &name) const {
+    const auto it = m_controls.constFind(name);
+    return it != m_controls.constEnd() && it->writable;
+}
+
+QString Backend::passthroughPath() const {
+    return m_stateDirectory + "/passthrough.json";
+}
+
+bool Backend::canPassthrough() const {
+    return available() && isWritable(kEngine);
+}
+
+bool Backend::passthrough() const {
+    if (!canPassthrough())
+        return false;
+    for (const auto &b : kBypass) {
+        const auto it = m_controls.constFind(b.name);
+        if (it == m_controls.constEnd() || !it->writable)
+            continue;
+        for (int v : it->values)
+            if (v != b.value)
+                return false;
+    }
+    return true;
+}
+
+bool Backend::setPassthrough(bool on) {
+    refresh();
+    if (!canPassthrough()) {
+        fail(tr("This card has no Acoustic Engine to bypass."));
+        return false;
+    }
+    if (on == passthrough()) {
+        // Already there: an old file would only bring back stale settings.
+        if (!on)
+            QFile::remove(passthroughPath());
+        return true;
+    }
+
+    QList<QPair<QString, QVector<int>>> changes;
+    if (on) {
+        QJsonObject saved;
+        for (const auto &b : kBypass) {
+            if (!isWritable(b.name))
+                continue;
+            QJsonArray values;
+            for (int v : m_controls.value(b.name).values)
+                values << v;
+            saved.insert(b.name, values);
+            changes.append({b.name, {b.value}});
+        }
+        // Written before the card changes: if it cannot be kept, nothing changes.
+        QSaveFile file(passthroughPath());
+        if (!QDir().mkpath(m_stateDirectory) || !file.open(QIODevice::WriteOnly)
+            || file.write(QJsonDocument(QJsonObject{{"version", 1}, {"controls", saved}}).toJson()) < 0
+            || !file.commit()) {
+            fail(tr("Could not remember the current settings: %1").arg(file.errorString()));
+            return false;
+        }
+    } else {
+        QFile file(passthroughPath());
+        const QJsonObject saved = file.open(QIODevice::ReadOnly)
+                                      ? QJsonDocument::fromJson(file.readAll()).object().value("controls").toObject()
+                                      : QJsonObject();
+        bool stillBypassed = true;
+        for (const auto &b : kBypass) {
+            if (!isWritable(b.name))
+                continue;
+            QVector<int> values;
+            for (const auto &v : saved.value(b.name).toArray())
+                values << v.toInt();
+            if (values.isEmpty())
+                values = m_controls.value(b.name).values;
+            for (int v : values)
+                stillBypassed = stillBypassed && v == b.value;
+            changes.append({b.name, values});
+        }
+        // Nothing saved, or the saved settings were a passthrough already:
+        // turning it off then means turning the Acoustic Engine on (the
+        // first entry; canPassthrough() made sure the card has it).
+        if (stillBypassed)
+            changes.first().second = {1};
+    }
+
+    const bool ok = writeStep(changes);
+    if (!on)
+        QFile::remove(passthroughPath());
+    if (ok)
+        emit message(on ? tr("Passthrough on: the sound reaches the output unprocessed.")
+                        : tr("Passthrough off: the card processes the sound again."),
+                     false);
+    return ok;
 }
 
 void Backend::record(const QList<Edit> &edits) {

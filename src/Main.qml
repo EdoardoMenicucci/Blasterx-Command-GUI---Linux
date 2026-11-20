@@ -46,6 +46,7 @@ ApplicationWindow {
     // unsaved to ask about.
     Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; enabled: backend.available; onActivated: backend.toggle(win.engine) }
+    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: backend.canPassthrough; onActivated: backend.togglePassthrough() }
     Shortcut {
         sequence: "O"; context: Qt.ApplicationShortcut; enabled: backend.available
         onActivated: backend.set(win.output, (backend.values[win.output] ?? 0) === 0 ? 1 : 0)
@@ -147,6 +148,16 @@ ApplicationWindow {
                         }
                     }
 
+                    ChoiceButton {
+                        text: qsTr("Passthrough")
+                        visible: backend.canPassthrough
+                        current: backend.passthrough
+                        onClicked: backend.togglePassthrough()
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 400
+                        ToolTip.text: qsTr("Play the sound unprocessed: no effects, equalizer or bass management (P)")
+                    }
+
                     RowLayout {
                         spacing: 4
                         visible: backend.info[win.engine] !== undefined
@@ -170,7 +181,7 @@ ApplicationWindow {
                         }
                         Slider {
                             readonly property var meta: backend.info[win.master]
-                            Layout.preferredWidth: 180
+                            Layout.preferredWidth: 160
                             from: meta ? meta.min : 0
                             to: meta ? meta.max : 1
                             stepSize: 1

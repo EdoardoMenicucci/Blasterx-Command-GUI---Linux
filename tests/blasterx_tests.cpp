@@ -23,6 +23,13 @@ public:
         for (int i = 0; i < 3; ++i)
             state << Control{QString("EQ Band%1 Playback Volume").arg(i), Control::Integer, 0, 48, 1, {}, {24}, true};
         state << Control{"FX: Equalizer Preset Switch", Control::Enumerated, 0, 1, 1, {"Flat", "Rock"}, {0}, true};
+        // What passthrough moves, set the way someone using effects would have it.
+        state << Control{"Enable OutFX Playback Switch", Control::Boolean, 0, 1, 1, {}, {1}, true}
+              << Control{"Bass Redirection", Control::Boolean, 0, 1, 1, {}, {1}, true}
+              << Control{"Full-Range Front Speakers", Control::Boolean, 0, 1, 1, {}, {0}, true};
+    }
+    void remove(const QString &name) {
+        state.removeIf([&](const Control &c) { return c.name == name; });
     }
 
     bool isOpen() const override { return true; }
@@ -207,6 +214,89 @@ private slots:
         QVERIFY(!backend.saveProfile("a/b"));
     }
 
+    void passthroughBypassesAndRestores() {
+        FakeDevice device;
+        QTemporaryDir dir;
+        Backend backend(&device, dir.path() + "/profiles", dir.path() + "/state");
+        QVERIFY(backend.canPassthrough());
+        QVERIFY(!backend.passthrough());
+
+        QSignalSpy values(&backend, &Backend::valuesChanged);
+        QVERIFY(backend.setPassthrough(true));
+        QVERIFY(backend.passthrough());
+        QVERIFY(values.count() > 0);
+        QCOMPARE(device.value("Enable OutFX Playback Switch"), 0);
+        QCOMPARE(device.value("Bass Redirection"), 0);
+        QCOMPARE(device.value("Full-Range Front Speakers"), 1);
+        // Effects keep their own switches, ready for when the engine is back.
+        QCOMPARE(device.value("FX: Crystalizer Playback Switch"), 1);
+
+        // Another process (the command line) turns it off and gets the
+        // settings back from the file.
+        Backend other(&device, dir.path() + "/profiles", dir.path() + "/state");
+        QVERIFY(other.passthrough());
+        QVERIFY(other.setPassthrough(false));
+        QVERIFY(!other.passthrough());
+        QCOMPARE(device.value("Enable OutFX Playback Switch"), 1);
+        QCOMPARE(device.value("Bass Redirection"), 1);
+        QCOMPARE(device.value("Full-Range Front Speakers"), 0);
+        QVERIFY(!QFile::exists(dir.path() + "/state/passthrough.json"));
+    }
+
+    void passthroughFollowsTheCard() {
+        FakeDevice device;
+        device.state[device.state.size() - 3].values = {0};  // engine off
+        device.state[device.state.size() - 2].values = {0};  // no bass redirection
+        device.state[device.state.size() - 1].values = {1};  // full range
+        QTemporaryDir dir;
+        Backend backend(&device, dir.path(), dir.path() + "/state");
+        QVERIFY(backend.passthrough());
+
+        // Nothing was saved: turning it off turns the engine on.
+        QVERIFY(backend.setPassthrough(false));
+        QCOMPARE(device.value("Enable OutFX Playback Switch"), 1);
+        QCOMPARE(device.value("Bass Redirection"), 0);
+        QVERIFY(!backend.passthrough());
+
+        // Turning bass redirection on by hand is not a passthrough either.
+        backend.set("Enable OutFX Playback Switch", false);
+        QVERIFY(backend.passthrough());
+        backend.set("Bass Redirection", true);
+        QVERIFY(!backend.passthrough());
+    }
+
+    void passthroughIsOneUndoStep() {
+        FakeDevice device;
+        QTemporaryDir dir;
+        Backend backend(&device, dir.path(), dir.path() + "/state");
+        QVERIFY(backend.setPassthrough(true));
+        backend.undo();
+        QCOMPARE(device.value("Enable OutFX Playback Switch"), 1);
+        QCOMPARE(device.value("Bass Redirection"), 1);
+        QCOMPARE(device.value("Full-Range Front Speakers"), 0);
+        QVERIFY(!backend.canUndo());
+    }
+
+    void passthroughSkipsControlsTheCardLacks() {
+        FakeDevice device;
+        device.remove("Bass Redirection");
+        device.remove("Full-Range Front Speakers");
+        QTemporaryDir dir;
+        Backend backend(&device, dir.path(), dir.path() + "/state");
+        QVERIFY(backend.setPassthrough(true));
+        QCOMPARE(device.value("Enable OutFX Playback Switch"), 0);
+        QVERIFY(backend.passthrough());
+
+        device.remove("Enable OutFX Playback Switch");
+        backend.refresh();
+        QVERIFY(!backend.canPassthrough());
+        QVERIFY(!backend.passthrough());
+        QSignalSpy messages(&backend, &Backend::message);
+        QVERIFY(!backend.setPassthrough(true));
+        QCOMPARE(messages.count(), 1);
+        QVERIFY(messages.last().at(1).toBool());
+    }
+
     void themeFallsBack() {
         QTemporaryDir dir;
         Theme theme(dir.path());
@@ -238,9 +328,57 @@ private slots:
 
     void translatorFallsBackToEnglish() {
         QTemporaryDir dir;
+        setLocale("C");
         Translator translator(dir.path() + "/language", dir.path());
         QCOMPARE(translator.language(), QString("en"));
         QVERIFY(translator.translate("Main", "Save").isNull());
+    }
+
+    void translatorFollowsTheSystemLocale() {
+        QTemporaryDir dir;
+        write(dir.path() + "/it.json", R"({"Save": "Salva"})");
+        setLocale("it_IT.UTF-8");
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.language(), QString("it-IT"));
+        QCOMPARE(translator.translate("Main", "Save"), QString("Salva"));
+        QCOMPARE(Translator::pluralCategory("it-IT", 1000000), QString("many"));
+    }
+
+    void omarchyLanguageWinsOverTheSystemLocale() {
+        QTemporaryDir dir;
+        write(dir.path() + "/language", "en\n");
+        write(dir.path() + "/it.json", R"({"Save": "Salva"})");
+        setLocale("it_IT.UTF-8");
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.language(), QString("en"));
+        QVERIFY(translator.translate("Main", "Save").isNull());
+    }
+
+    void systemLanguageReadsTheEnvironment() {
+        QTemporaryDir dir;
+        write(dir.path() + "/it.json", "{}");
+        write(dir.path() + "/pt-BR.json", "{}");
+
+        setLocale("pt_BR.UTF-8");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("pt-BR"));
+        setLocale("it_IT.UTF-8@euro");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("it-IT"));
+        // LC_ALL over LC_MESSAGES over LANG.
+        setLocale("de_DE.UTF-8", "it_IT.UTF-8");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("it-IT"));
+        setLocale("de_DE.UTF-8", "it_IT.UTF-8", "en_US.UTF-8");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("en-US"));
+        // LANGUAGE lists preferences; the first with a catalog wins.
+        setLocale("en_US.UTF-8", {}, {}, "de:it:en");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("it"));
+        // No catalog anywhere: the first preference, for numbers and dates.
+        setLocale("de_DE.UTF-8", {}, {}, "fr");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("fr"));
+        // The C locale is English, and LANGUAGE does not apply to it.
+        setLocale("C", {}, {}, "it");
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("en"));
+        setLocale({});
+        QCOMPARE(Translator::systemLanguage(dir.path()), QString("en"));
     }
 
     void translatorFollowsTheLanguageFile() {
@@ -254,16 +392,24 @@ private slots:
         QVERIFY(translator.translate("Main", "Quit").isNull());
     }
 
-    void italianCatalogLoads() {
+    void englishCatalogCarriesPlurals() {
         QTemporaryDir dir;
-        write(dir.path() + "/language", "it\n");
+        write(dir.path() + "/language", "en\n");
         Translator translator(dir.path() + "/language", QString(SRCDIR) + "/../src/i18n");
-        QCOMPARE(translator.translate("Main", "Equalizer"), QString("Equalizzatore"));
+        QVERIFY(translator.translate("Main", "Equalizer").isNull());
         QCOMPARE(translator.translate("Backend", "Applied %1, but %n controls could not be set.", nullptr, 1),
-                 QString("Applicato %1, ma %n controllo non è stato impostato."));
+                 QString("Applied %1, but %n control could not be set."));
     }
 
 private:
+    static void setLocale(const QByteArray &lang, const QByteArray &messages = {}, const QByteArray &all = {},
+                          const QByteArray &language = {}) {
+        qputenv("LANG", lang);
+        qputenv("LC_MESSAGES", messages);
+        qputenv("LC_ALL", all);
+        qputenv("LANGUAGE", language);
+    }
+
     static void write(const QString &path, const QByteArray &contents) {
         QFile file(path);
         QVERIFY(file.open(QIODevice::WriteOnly));

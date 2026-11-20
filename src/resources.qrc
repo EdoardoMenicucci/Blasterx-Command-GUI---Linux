@@ -19,6 +19,5 @@
         <file alias="SettingSwitch.qml">SettingSwitch.qml</file>
         <file alias="Style.js">Style.js</file>
         <file alias="i18n/en.json">i18n/en.json</file>
-        <file alias="i18n/it.json">i18n/it.json</file>
     </qresource>
 </RCC>

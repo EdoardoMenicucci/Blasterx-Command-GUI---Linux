@@ -21,7 +21,9 @@ const char *kUsage =
     "       blasterx profile list [--json]\n"
     "       blasterx profile save <name>      store the current settings\n"
     "       blasterx profile apply <name>\n"
-    "       blasterx profile delete <name>\n";
+    "       blasterx profile delete <name>\n"
+    "       blasterx passthrough [on|off|toggle] [--json]\n"
+    "                                         bypass every effect, or show whether it is on\n";
 
 QString describe(const Control &c) {
     QStringList shown;
@@ -56,7 +58,7 @@ void print(const QJsonValue &v) {
 } // namespace
 
 bool isCliCommand(const QStringList &arguments) {
-    static const QStringList commands{"list", "get", "set", "profile", "help", "--help", "-h"};
+    static const QStringList commands{"list", "get", "set", "profile", "passthrough", "help", "--help", "-h"};
     return arguments.size() > 1 && commands.contains(arguments.at(1));
 }
 
@@ -135,6 +137,24 @@ int runCli(const QStringList &arguments) {
             if (json) print(QJsonObject{{"ok", true}, {"profile", name}});
             return 0;
         }
+    }
+
+    if (command == "passthrough" && args.size() <= 2) {
+        static const QStringList actions{"", "on", "off", "toggle"};
+        const QString action = args.value(1);
+        if (!actions.contains(action))
+            return failWith(kUsage);
+        if (!backend.canPassthrough())
+            return failWith("This card has no Acoustic Engine to bypass.");
+        bool ok = true;
+        if (action == "on") ok = backend.setPassthrough(true);
+        else if (action == "off") ok = backend.setPassthrough(false);
+        else if (action == "toggle") ok = backend.togglePassthrough();
+        if (!ok) return failWith(lastError);
+        backend.refresh();
+        if (json) print(QJsonObject{{"passthrough", backend.passthrough()}});
+        else out() << (backend.passthrough() ? "on" : "off") << "\n";
+        return 0;
     }
 
     err() << kUsage;

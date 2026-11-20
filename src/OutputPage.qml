@@ -11,6 +11,16 @@ PageScroll {
     function hz(v) { return (v * 10) + " Hz" }
 
     Panel {
+        title: qsTr("Passthrough")
+        subtitle: qsTr("The sound reaches the output as it is: no Acoustic Engine, equalizer or bass management. Turning it off brings your settings back. P switches it.")
+        visible: backend.canPassthrough
+        headerExtra: Switch {
+            checked: backend.passthrough
+            onToggled: backend.setPassthrough(checked)
+        }
+    }
+
+    Panel {
         title: qsTr("Destination")
         SettingChoice {
             control: "Output Select"

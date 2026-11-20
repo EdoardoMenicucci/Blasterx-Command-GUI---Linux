@@ -15,6 +15,9 @@ directly, so everything the `snd_hda_codec_ca0132` driver exposes is here:
   Plus, each with its strength.
 - **Microphone**: input source, boost, What U Hear, and CrystalVoice (Voice
   Focus with its angle, noise reduction, Smart Volume, voice morphing).
+- **Passthrough**: one switch that plays the sound unprocessed (no Acoustic
+  Engine, equalizer or bass management) and brings your settings back when
+  you turn it off.
 - **Profiles**: save every setting under a name and switch in one step.
 - **All controls**: every driver control by its ALSA name.
 
@@ -39,6 +42,7 @@ To build it from source instead, see [Build](#build).
 | --- | --- |
 | `1`–`6` | Go to a page |
 | `Space` | Turn the Acoustic Engine on or off |
+| `P` | Turn passthrough on or off |
 | `O` | Switch between speakers and headphones |
 | `+` / `-` | Master volume up or down |
 | `M` | Mute or unmute |
@@ -60,9 +64,14 @@ blasterx set "Output Select" headphone         # on/off, a number, or a choice
 blasterx set "FX: Crystalizer Playback Volume" 60
 blasterx profile save Games
 blasterx profile apply Music
+blasterx passthrough toggle                    # on, off, toggle, or no argument for the state
 ```
 
-Profiles are JSON files in `~/.config/blasterx/profiles/`. The card is found
+Profiles are JSON files in `~/.config/blasterx/profiles/`. Passthrough keeps
+the settings it replaces in `~/.local/state/blasterx/passthrough.json`, so a
+key binding can turn it on and the window can turn it off, or the reverse.
+It is read from the card: with the Acoustic Engine off and no bass
+management, passthrough is on, however the card got there. The card is found
 by its Creative codec; set `BLASTERX_CARD=hw:2` to pick one explicitly.
 
 ## Build
@@ -74,4 +83,6 @@ bin/install   # makepkg -fsi: installs the binary, launcher entry and icon
 ```
 
 Needs Qt 6 (base, declarative, wayland) and alsa-lib. The window follows the
-Omarchy theme accent, window rounding, and language (English and Italian).
+Omarchy theme accent and window rounding. The interface is in English; a
+catalog added under `src/i18n/` and listed in `src/resources.qrc` is picked
+up from the Omarchy language, or without one from the system locale (`LANG`).

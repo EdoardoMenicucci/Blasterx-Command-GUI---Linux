@@ -12,6 +12,7 @@ Rectangle {
     readonly property var rows: [
         ["1 – 6", qsTr("Go to a page")],
         ["Space", qsTr("Turn the Acoustic Engine on or off")],
+        ["P", qsTr("Turn passthrough on or off")],
         ["O", qsTr("Switch between speakers and headphones")],
         ["+  /  −", qsTr("Master volume up or down")],
         ["M", qsTr("Mute or unmute")],

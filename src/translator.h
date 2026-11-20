@@ -7,7 +7,8 @@
 #include <QTimer>
 #include <QTranslator>
 
-// Follows the language picked under Omarchy's Setup > Language. Catalogs are
+// Follows the language picked under Omarchy's Setup > Language, and without
+// one the system locale (LANGUAGE, LC_ALL, LC_MESSAGES, LANG). Catalogs are
 // flat JSON objects from English source text to translation, one per Omarchy
 // language code (i18n/da.json, i18n/pt-BR.json), so QML keeps plain
 // qsTr("Save") and C++ keeps tr("Save"). A counted string,
@@ -27,6 +28,7 @@ public:
                       int n = -1) const override;
 
     static QString readLanguage(const QString &path);
+    static QString systemLanguage(const QString &catalogDirectory);
     static QString pluralCategory(const QString &language, long long count);
     static QLocale formatLocale(const QString &language);
 
